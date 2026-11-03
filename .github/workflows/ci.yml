@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    name: Client on Java ${{ matrix.java }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['11', '17', '21', '25']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Build and test the client
+        run: mvn -B -ntp -f smstunnel-java/pom.xml verify
+
+  starter:
+    name: Starter on Spring Boot ${{ matrix.boot }} (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { boot: '3.5.16', java: '17' }
+          - { boot: '3.5.16', java: '21' }
+          - { boot: '4.1.2', java: '25' }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - name: Build and test both modules
+        run: mvn -B -ntp verify "-Dspring-boot.version=${{ matrix.boot }}"
+
+  release-files:
+    name: Sources and Javadoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build the release files without signing
+        run: mvn -B -ntp -Prelease -DskipTests -Dgpg.skip verify
