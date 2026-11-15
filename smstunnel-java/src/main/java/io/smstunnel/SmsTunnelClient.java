@@ -2,9 +2,11 @@ package io.smstunnel;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -12,9 +14,12 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -27,8 +32,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
 
 /**
- * The SMSTunnel client: sends texts through your own Android phone, from your own number, and reads their status,
- * your phones, your usage and the texts your phone received.
+ * The SMSTunnel client: sends texts through your own Android phone, from your own number, now or at a time you choose,
+ * and reads their status, your phones, your usage and the texts your phone received.
  *
  * <pre>{@code
  * SmsTunnelClient sms = SmsTunnelClient.builder()
@@ -49,7 +54,10 @@ import java.util.regex.Pattern;
  *
  * <p>Retries: reads, and sends that carry an Idempotency-Key, are tried again up to {@code maxRetries} times (default
  * 2) after a connection problem, a timeout, or a 502/503/504. When a send has no key of yours, the client gives it one
- * of its own, so a retry can never send the text twice. A 429 is never retried.
+ * of its own, so a retry can never send the text twice. A 429 is never retried. Scheduling a text
+ * ({@link #scheduleSms(String, String, Instant)}) follows the rules of a send; canceling one
+ * ({@link #cancelScheduledText(String)}) is tried again only when the connection could not be made, so it never
+ * reached SMSTunnel.
  */
 public final class SmsTunnelClient {
 
@@ -135,6 +143,12 @@ public final class SmsTunnelClient {
         requireText(to, "to (the recipient's number)");
         requireText(message, "message");
         SendOptions opts = options != null ? options : SendOptions.none();
+        Answer answer = execute("POST", path, sendBody(to, message, opts), idempotencyKeyFor(opts));
+        return SendResult.from(answer.body, answer.replayed);
+    }
+
+    /** {@code {to, message[, deviceId][, defaultCountryCode]}}, the body of every send. */
+    private Map<String, Object> sendBody(String to, String message, SendOptions opts) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("to", to.trim());
         body.put("message", message);
@@ -145,12 +159,157 @@ public final class SmsTunnelClient {
         if (countryCode != null) {
             body.put("defaultCountryCode", countryCode);
         }
+        return body;
+    }
+
+    /** Your Idempotency-Key, or one of the client's own when it may retry the send. */
+    private String idempotencyKeyFor(SendOptions opts) {
         String key = opts.getIdempotencyKey();
         if (key == null && autoIdempotencyKey && maxRetries > 0) {
             key = UUID.randomUUID().toString();
         }
-        Answer answer = execute("POST", path, body, key);
-        return SendResult.from(answer.body, answer.replayed);
+        return key;
+    }
+
+    // ─── Scheduled texts ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Schedules a text: SMSTunnel keeps it and sends it at {@code sendAt} ({@code POST /api/v1/sms/send} with
+     * {@code sendAt}), exactly as if your app had called {@link #sendSms(String, String)} then, with this key: the phone,
+     * the country code and the plan's daily allowance of that moment apply, and the text counts then. If the phone is
+     * offline at that time, the text waits for it up to 3 days, like any other.
+     *
+     * <p>{@code sendAt} must be 1 minute to 30 days from now, by SMSTunnel's clock; otherwise SMSTunnel answers 400 with
+     * {@link SmsTunnelApiException#SCHEDULE_TOO_SOON} or {@link SmsTunnelApiException#SCHEDULE_TOO_FAR}. Each plan caps
+     * the texts waiting at once (403, {@link SmsTunnelApiException#SCHEDULE_LIMIT_REACHED}). Sign-in codes can't be
+     * scheduled. Retries and the Idempotency-Key work as for {@link #sendSms(String, String, SendOptions)}.
+     *
+     * @param to the recipient, in international format ({@code +14155550123})
+     * @param message the text, up to 1600 characters
+     * @param sendAt when to send it
+     * @return the scheduled text's id, its time and its status
+     */
+    public ScheduledSendResult scheduleSms(String to, String message, Instant sendAt) {
+        return scheduleSms(to, message, sendAt, SendOptions.none());
+    }
+
+    /** Schedules a text, with a phone, a country code or an Idempotency-Key of your choice. */
+    public ScheduledSendResult scheduleSms(String to, String message, Instant sendAt, SendOptions options) {
+        return schedule(to, message, sendAt != null ? sendAt.atOffset(ZoneOffset.UTC) : null, options);
+    }
+
+    /** Schedules a text at a date and time with its offset, such as {@code 2026-11-16T09:00+02:00}. */
+    public ScheduledSendResult scheduleSms(String to, String message, OffsetDateTime sendAt) {
+        return scheduleSms(to, message, sendAt, SendOptions.none());
+    }
+
+    /** Schedules a text at a date and time with its offset, with a phone, a country code or an Idempotency-Key. */
+    public ScheduledSendResult scheduleSms(String to, String message, OffsetDateTime sendAt, SendOptions options) {
+        return schedule(to, message, sendAt, options);
+    }
+
+    /** Schedules a text at a date and time in a time zone, such as 09:00 in {@code Europe/Bucharest}. */
+    public ScheduledSendResult scheduleSms(String to, String message, ZonedDateTime sendAt) {
+        return scheduleSms(to, message, sendAt, SendOptions.none());
+    }
+
+    /** Schedules a text at a date and time in a time zone, with a phone, a country code or an Idempotency-Key. */
+    public ScheduledSendResult scheduleSms(String to, String message, ZonedDateTime sendAt, SendOptions options) {
+        return schedule(to, message, sendAt != null ? sendAt.toOffsetDateTime() : null, options);
+    }
+
+    private ScheduledSendResult schedule(String to, String message, OffsetDateTime sendAt, SendOptions options) {
+        requireText(to, "to (the recipient's number)");
+        requireText(message, "message");
+        if (sendAt == null) {
+            throw new IllegalArgumentException("sendAt (when to send the text) is required");
+        }
+        SendOptions opts = options != null ? options : SendOptions.none();
+        Map<String, Object> body = sendBody(to, message, opts);
+        body.put("sendAt", sendAtText(sendAt));
+        Answer answer = execute("POST", "/api/v1/sms/send", body, idempotencyKeyFor(opts));
+        if (!Fields.bool(answer.body, "scheduled")) {
+            // A server that does not know sendAt and does not refuse it sends the text now.
+            String messageId = SendResult.from(answer.body, answer.replayed).getMessageId();
+            throw new SmsTunnelApiException(answer.status, messageId != null
+                    ? "SMSTunnel sent the text now instead of scheduling it (message id " + messageId
+                            + "): this server does not support scheduled texts."
+                    : "SMSTunnel's answer is not a scheduled text.", answer.body, null);
+        }
+        return ScheduledSendResult.from(answer.body, answer.replayed);
+    }
+
+    /**
+     * {@code sendAt} as SMSTunnel reads it: a date, a time with seconds, and the offset, such as
+     * {@code 2026-11-16T09:00:00Z} or {@code 2026-11-16T11:00:00+02:00}. SMSTunnel takes at most 3 digits after the
+     * seconds and an offset in hours and minutes, while {@code ISO_OFFSET_DATE_TIME} writes up to 9 digits (an
+     * {@code OffsetDateTime.now()} has micro- or nanoseconds) and offsets with seconds ({@code +01:00:30}). So the time
+     * is cut to whole seconds, and an offset with seconds becomes UTC (the same instant); any other offset is kept as
+     * you gave it.
+     */
+    static String sendAtText(OffsetDateTime sendAt) {
+        OffsetDateTime at = sendAt.truncatedTo(ChronoUnit.SECONDS);
+        if (at.getOffset().getTotalSeconds() % 60 != 0) {
+            at = at.withOffsetSameInstant(ZoneOffset.UTC);
+        }
+        return DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(at);
+    }
+
+    /**
+     * The first 50 texts this key scheduled that still wait, soonest first. See
+     * {@link #getScheduledTexts(ScheduledTextsQuery)}.
+     */
+    public ScheduledTexts getScheduledTexts() {
+        return getScheduledTexts(ScheduledTextsQuery.waiting());
+    }
+
+    /**
+     * The texts this key scheduled ({@code GET /api/v1/sms/scheduled}, needs {@code sms:read}): the ones that still wait,
+     * soonest first, or with {@link ScheduledTextScope#DONE} the ones that went out, failed or were canceled, newest
+     * first (kept 30 days). Texts scheduled by other keys or in the dashboard are not listed, but count in
+     * {@link ScheduledTexts#getWaiting()}.
+     */
+    public ScheduledTexts getScheduledTexts(ScheduledTextsQuery query) {
+        ScheduledTextsQuery q = query != null ? query : ScheduledTextsQuery.waiting();
+        StringBuilder path = new StringBuilder("/api/v1/sms/scheduled");
+        char sep = '?';
+        if (q.getScope() != null) {
+            path.append(sep).append("scope=").append(q.getScope().wireValue());
+            sep = '&';
+        }
+        if (q.getPage() != null) {
+            path.append(sep).append("page=").append(q.getPage());
+            sep = '&';
+        }
+        if (q.getLimit() != null) {
+            path.append(sep).append("limit=").append(q.getLimit());
+        }
+        return ScheduledTexts.from(execute("GET", path.toString(), null, null).body);
+    }
+
+    /**
+     * One text this key scheduled ({@code GET /api/v1/sms/scheduled/{id}}, needs {@code sms:read}). 404 with
+     * {@link SmsTunnelApiException#SCHEDULE_NOT_FOUND} when this key scheduled no text with that id.
+     */
+    public ScheduledText getScheduledText(String scheduledId) {
+        requireText(scheduledId, "scheduledId");
+        Answer answer = execute("GET", "/api/v1/sms/scheduled/" + encode(scheduledId.trim()), null, null);
+        return ScheduledText.from(Fields.object(answer.body, "data"));
+    }
+
+    /**
+     * Cancels a text this key scheduled, while it still waits ({@code DELETE /api/v1/sms/scheduled/{id}}, needs
+     * {@code sms:send}), and returns it with {@link ScheduledTextStatus#CANCELED}. 409 with
+     * {@link SmsTunnelApiException#SCHEDULE_NOT_EDITABLE} when it already went out, failed or was canceled; 404 with
+     * {@link SmsTunnelApiException#SCHEDULE_NOT_FOUND} when this key scheduled no text with that id.
+     *
+     * <p>It is tried again only when the connection could not be made. After a timeout or an error answer the cancel may
+     * have gone through, and a second one would answer 409: look the text up with {@link #getScheduledText(String)}.
+     */
+    public ScheduledText cancelScheduledText(String scheduledId) {
+        requireText(scheduledId, "scheduledId");
+        Answer answer = execute("DELETE", "/api/v1/sms/scheduled/" + encode(scheduledId.trim()), null, null);
+        return ScheduledText.from(Fields.object(answer.body, "data"));
     }
 
     // ─── Reading ─────────────────────────────────────────────────────────────────────────────────
@@ -228,18 +387,21 @@ public final class SmsTunnelClient {
 
     /** A 2xx JSON answer. */
     private static final class Answer {
+        final int status;
         final Map<String, Object> body;
         final boolean replayed;
 
-        Answer(Map<String, Object> body, boolean replayed) {
+        Answer(int status, Map<String, Object> body, boolean replayed) {
+            this.status = status;
             this.body = body;
             this.replayed = replayed;
         }
     }
 
     private Answer execute(String method, String path, Map<String, Object> body, String idempotencyKey) {
-        // A send is retried only with an Idempotency-Key: without one, a retry could send the text twice.
-        boolean retryable = "GET".equals(method) || idempotencyKey != null;
+        // A send is retried only with an Idempotency-Key: without one, a retry could send the text twice. A DELETE
+        // (canceling a scheduled text) only when it never reached SMSTunnel (retryWait).
+        boolean retryable = "GET".equals(method) || "DELETE".equals(method) || idempotencyKey != null;
         for (int attempt = 0; ; attempt++) {
             try {
                 return once(method, path, body, idempotencyKey);
@@ -264,9 +426,18 @@ public final class SmsTunnelClient {
         long base = retryBaseDelay.toMillis() << Math.min(attempt, 6);
         Duration backoff = Duration.ofMillis(Math.round(base * ThreadLocalRandom.current().nextDouble(0.8, 1.2)));
         if (e instanceof SmsTunnelConnectionException) {
-            return e.getCause() instanceof InterruptedException ? null : backoff;
+            if (e.getCause() instanceof InterruptedException) {
+                return null;
+            }
+            // A cancel that may have arrived is not sent again: if the first one canceled the text, the second would
+            // answer 409 SCHEDULE_NOT_EDITABLE. Only a connection that could not be made is certain to have sent nothing.
+            if ("DELETE".equals(method) && !(e.getCause() instanceof ConnectException
+                    || e.getCause() instanceof HttpConnectTimeoutException)) {
+                return null;
+            }
+            return backoff;
         }
-        if (!(e instanceof SmsTunnelApiException)) {
+        if (!(e instanceof SmsTunnelApiException) || "DELETE".equals(method)) {
             return null;
         }
         SmsTunnelApiException api = (SmsTunnelApiException) e;
@@ -301,6 +472,8 @@ public final class SmsTunnelClient {
         if (body != null) {
             request.header("Content-Type", "application/json; charset=utf-8")
                     .POST(HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8));
+        } else if ("DELETE".equals(method)) {
+            request.DELETE();
         } else {
             request.GET();
         }
@@ -334,7 +507,7 @@ public final class SmsTunnelClient {
                         error != null && !error.isEmpty() ? error : "SMSTunnel did not accept the request.", json, null);
             }
             boolean replayed = "true".equalsIgnoreCase(headers.firstValue("Idempotent-Replayed").orElse(""));
-            return new Answer(json, replayed);
+            return new Answer(status, json, replayed);
         }
         if (status >= 300 && status < 400) {
             String location = headers.firstValue("Location").orElse("another address");
@@ -488,7 +661,8 @@ public final class SmsTunnelClient {
 
         /**
          * How many times a failed request is tried again (0 to 5, default 2): reads, and sends with an
-         * Idempotency-Key, after a connection problem, a timeout or a 502/503/504. 0 turns retries off.
+         * Idempotency-Key, after a connection problem, a timeout or a 502/503/504; a cancel of a scheduled text only
+         * when the connection could not be made. 0 turns retries off.
          */
         public Builder maxRetries(int maxRetries) {
             if (maxRetries < 0 || maxRetries > 5) {

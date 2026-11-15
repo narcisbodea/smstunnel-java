@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import com.mongodb.ConnectionString;
 import com.mongodb.client.MongoClient;
@@ -120,6 +121,30 @@ class SmsTunnelClientE2ETest {
         MessageStatus status = waitUntilSent(result.getMessageId());
         assertEquals("+14155557302", status.getPhoneNumber());
         assertStored(result.getMessageId(), "+14155557302", text);
+    }
+
+    @Test
+    void schedulesListsAndCancelsAText() {
+        String text = "smstunnel-java e2e scheduled " + UUID.randomUUID();
+        ScheduledSendResult scheduled;
+        try {
+            scheduled = client.scheduleSms(TO, text, Instant.now().plus(Duration.ofHours(1)));
+        } catch (SmsTunnelApiException e) {
+            assumeFalse(e.getStatusCode() == 400 && e.getMessage().contains("sendAt should not exist"),
+                    "the test server has no scheduled texts yet");
+            throw e;
+        }
+        String id = scheduled.getScheduledId();
+
+        assertEquals(ScheduledTextStatus.SCHEDULED, scheduled.getStatus());
+        assertEquals(text, scheduled.getScheduledText().getMessage());
+        assertTrue(client.getScheduledTexts(ScheduledTextsQuery.builder().limit(100).build()).getTexts().stream()
+                .anyMatch(waiting -> id.equals(waiting.getId())), "listed while it waits");
+
+        assertEquals(ScheduledTextStatus.CANCELED, client.cancelScheduledText(id).getStatus());
+        assertEquals(ScheduledTextStatus.CANCELED, client.getScheduledText(id).getStatus());
+        SmsTunnelApiException again = assertThrows(SmsTunnelApiException.class, () -> client.cancelScheduledText(id));
+        assertEquals(SmsTunnelApiException.SCHEDULE_NOT_EDITABLE, again.getCode());
     }
 
     @Test
