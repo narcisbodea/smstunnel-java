@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 (2026-11-15)
+
+Scheduled texts: SMSTunnel keeps a text and sends it at the time you give, 1 minute to 30 days ahead.
+
+### smstunnel-java
+
+- `scheduleSms(to, message, sendAt)` and `scheduleSms(to, message, sendAt, options)`, with `sendAt` an `Instant`, an `OffsetDateTime` or a `ZonedDateTime` (a time without a zone does not compile). It sends `sendAt` to `POST /api/v1/sms/send` in whole seconds with its offset, and returns a `ScheduledSendResult`: `getScheduledId()`, `getSendAt()`, `getStatus()`, `getScheduledText()`, `isReplayed()`, `getRaw()`. Retries and the Idempotency-Key work as for `sendSms`. `sendSms` and `sendSignInCode` are unchanged.
+- `getScheduledTexts()` and `getScheduledTexts(ScheduledTextsQuery)` (`ScheduledTextScope.WAITING` or `DONE`, page, limit) return `ScheduledTexts` (with `getWaiting()` and the plan's `getMax()`); `getScheduledText(id)` and `cancelScheduledText(id)` return a `ScheduledText` (`ScheduledTextStatus` `SCHEDULED`, `SENT`, `FAILED`, `CANCELED`; `getMessageId()` once sent, `getError()` once failed). A cancel is tried again only when the connection could not be made, since a second cancel of a canceled text answers 409.
+- `SmsTunnelApiException`: the `SCHEDULE_*` code constants, and `getMax()` for `SCHEDULE_LIMIT_REACHED` (403, `SmsTunnelPermissionException`).
+- A server that sends the text at once instead of scheduling it makes `scheduleSms` throw `SmsTunnelApiException`, with the message id in its message; one from before scheduled texts answers 400 "property sendAt should not exist".
+
+### smstunnel-spring-boot-starter
+
+- 1.1.0, with the client 1.1.0. The `SmsTunnelClient` bean has the new methods; nothing else changed.
+
 ## 1.0.0 (2026-11-03)
 
 First release.

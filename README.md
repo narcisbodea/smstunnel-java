@@ -21,7 +21,7 @@ Maven, without Spring:
 <dependency>
   <groupId>io.github.narcisbodea</groupId>
   <artifactId>smstunnel-java</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
 </dependency>
 ```
 
@@ -31,11 +31,11 @@ With Spring Boot, the starter instead (it brings the client):
 <dependency>
   <groupId>io.github.narcisbodea</groupId>
   <artifactId>smstunnel-spring-boot-starter</artifactId>
-  <version>1.0.0</version>
+  <version>1.1.0</version>
 </dependency>
 ```
 
-Gradle: `implementation("io.github.narcisbodea:smstunnel-java:1.0.0")` or `implementation("io.github.narcisbodea:smstunnel-spring-boot-starter:1.0.0")`.
+Gradle: `implementation("io.github.narcisbodea:smstunnel-java:1.1.0")` or `implementation("io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.0")`.
 
 ## Get your key
 
@@ -103,6 +103,34 @@ status.getSentAt();          // an Instant, or null
 status.getErrorMessage();    // why it failed, or null
 ```
 
+### Scheduled texts
+
+Give a time, 1 minute to 30 days ahead, and SMSTunnel keeps the text and sends it then:
+
+```java
+import io.smstunnel.ScheduledSendResult;
+import io.smstunnel.ScheduledText;
+
+ScheduledSendResult scheduled = sms.scheduleSms("+14155550123", "Reminder: your appointment is tomorrow at 10:30.",
+        ZonedDateTime.of(2026, 11, 16, 9, 0, 0, 0, ZoneId.of("Europe/Bucharest")),   // or an Instant, an OffsetDateTime
+        SendOptions.builder().idempotencyKey("appointment-381-reminder").build());
+
+scheduled.getScheduledId();  // keep it to look the text up or cancel it
+scheduled.getSendAt();       // an Instant
+
+for (ScheduledText text : sms.getScheduledTexts()) {   // the ones still waiting, soonest first
+    System.out.println(text.getSendAt() + " " + text.getTo() + " " + text.getStatus());
+}
+
+sms.cancelScheduledText(scheduled.getScheduledId());   // while it still waits
+```
+
+- At its time SMSTunnel sends it exactly as if your app had called `sendSms` then, with the same key: the phone, the country code and the plan's daily allowance of that moment apply, and the text counts then. If the phone is offline, it waits for it up to 3 days, like any text.
+- Each plan caps the texts waiting at once: Free 10, Starter 50, Standard 200, Professional 500, Enterprise 1000. Past it, `scheduleSms` throws `SmsTunnelPermissionException` with `getCode()` `SCHEDULE_LIMIT_REACHED` and `getMax()`.
+- `getScheduledTexts()` lists only the texts this key scheduled. `getScheduledTexts(ScheduledTextsQuery.done())` lists the ones that went out (`SENT`), failed (`FAILED`, with `getError()`) or were canceled, newest first; SMSTunnel keeps them for 30 days. `getScheduledText(id)` reads one: once sent, its `getMessageId()` works with `getMessageStatus`.
+- A time less than a minute or more than 30 days away is refused (400, `SCHEDULE_TOO_SOON` or `SCHEDULE_TOO_FAR`). A date and time without a zone (`LocalDateTime`) is not accepted at all: give an `Instant`, an `OffsetDateTime` or a `ZonedDateTime`. Canceling a text that already went out answers 409 `SCHEDULE_NOT_EDITABLE`. Sign-in codes can't be scheduled.
+- Retries and the Idempotency-Key work as for `sendSms`. A cancel is tried again only when the connection could not be made.
+
 ### Your phones and your usage
 
 ```java
@@ -149,7 +177,7 @@ Every call throws an unchecked `SmsTunnelException` when it does not go through:
 | `SmsTunnelPermissionException` (403) | The key lacks a permission (`getCode()` is `PERMISSION_REQUIRED`, `getPermission()` names it, e.g. `sms:inbox`), or the plan does not include the feature. |
 | `SmsTunnelRateLimitException` (429) | Too many requests, or today's allowance is used up. `getRetryAfter()` gives the wait when SMSTunnel says it. |
 | `SmsTunnelServerException` (5xx) | SMSTunnel, or a proxy in front of it, had a problem. |
-| `SmsTunnelApiException` | Any other error answer: 400 (a number it cannot read, a sign-in text without a code), 404 (no such message), 409/422 (an Idempotency-Key still in progress, or reused for another text). The four above extend it. |
+| `SmsTunnelApiException` | Any other error answer: 400 (a number it cannot read, a sign-in text without a code, a time to schedule at that is too soon), 404 (no such message or scheduled text), 409/422 (an Idempotency-Key still in progress, or reused for another text; a scheduled text that already went out). The four above extend it, and its `SCHEDULE_*` constants are the codes of scheduled texts. |
 | `SmsTunnelConnectionException` | SMSTunnel could not be reached, or did not answer in time (`isTimeout()`). |
 
 ```java
@@ -168,7 +196,7 @@ An empty number or text throws `IllegalArgumentException` before anything is sen
 
 ### Retries
 
-Reads, and sends that carry an Idempotency-Key, are tried again up to 2 times after a connection problem, a timeout or a 502/503/504. When a send has no key of yours, the client gives it one of its own (a UUID), so its retries can never send the text twice. A 429 is never retried. Change it with `.maxRetries(0..5)`, or `.autoIdempotencyKey(false)` to send without a key (such sends are then not retried).
+Reads, and sends that carry an Idempotency-Key, are tried again up to 2 times after a connection problem, a timeout or a 502/503/504. When a send has no key of yours, the client gives it one of its own (a UUID), so its retries can never send the text twice. Scheduling a text follows the same rules; canceling one is tried again only when the connection could not be made (after a timeout it may already have gone through). A 429 is never retried. Change it with `.maxRetries(0..5)`, or `.autoIdempotencyKey(false)` to send without a key (such sends are then not retried).
 
 ## Spring Boot
 
@@ -239,7 +267,7 @@ Paste this into Claude, ChatGPT, Cursor or Copilot, and replace the part in brac
 ```text
 I want my Java app to send texts with SMSTunnel. SMSTunnel sends each text from my own Android phone, from my own number: the phone runs the SMSTunnel app (Google Play) and is linked to my SMSTunnel account.
 
-Use the SMSTunnel Java library: Maven io.github.narcisbodea:smstunnel-java:1.0.0 (Java 11+, no dependencies). With Spring Boot, use io.github.narcisbodea:smstunnel-spring-boot-starter:1.0.0 and smstunnel.api-key=${SMSTUNNEL_API_KEY} in application.properties: it gives a ready SmsTunnelClient bean. Without Spring: SmsTunnelClient sms = SmsTunnelClient.builder().apiKey(System.getenv("SMSTUNNEL_API_KEY")).build();
+Use the SMSTunnel Java library: Maven io.github.narcisbodea:smstunnel-java:1.1.0 (Java 11+, no dependencies). With Spring Boot, use io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.0 and smstunnel.api-key=${SMSTUNNEL_API_KEY} in application.properties: it gives a ready SmsTunnelClient bean. Without Spring: SmsTunnelClient sms = SmsTunnelClient.builder().apiKey(System.getenv("SMSTUNNEL_API_KEY")).build();
 
 API facts:
 - sms.sendSms(to, message) calls POST https://smstunnel.io/api/v1/sms/send with the header X-API-Key and the JSON body {"to", "message", "deviceId"?, "defaultCountryCode"?}. It returns a SendResult with getMessageId() and isQueued().
@@ -247,6 +275,7 @@ API facts:
 - sms.sendSignInCode(to, message) (POST /api/v1/sms/send-2fa) is only for sign-in codes: the text must contain a code of 4 to 10 digits standing on its own (e.g. 482913 or 123-456), at most 320 characters; it uses a separate allowance.
 - Numbers in international format (+14155550123). defaultCountryCode (e.g. "+40", in SendOptions or once on the builder) completes numbers written without + or 00.
 - SendOptions.builder().idempotencyKey("order-1042-shipped") makes a repeat within 24 hours return the first answer instead of a second text.
+- sms.scheduleSms(to, message, sendAt) (an Instant, OffsetDateTime or ZonedDateTime, 1 minute to 30 days ahead) has SMSTunnel send the text at that time, as if sendSms were called then; it returns getScheduledId(). getScheduledTexts(), getScheduledText(id) and cancelScheduledText(id) list, read and cancel the texts this key scheduled.
 - Limits: 30 send requests a minute per key, 1600 characters a text.
 - Errors are unchecked: SmsTunnelAuthenticationException (401, bad key), SmsTunnelPermissionException (403, getCode() such as PERMISSION_REQUIRED), SmsTunnelRateLimitException (429, getRetryAfter()), SmsTunnelServerException (5xx), SmsTunnelApiException (other errors, e.g. 400 for a number it cannot read), SmsTunnelConnectionException (network, timeout).
 - If the phone is offline, the text waits on the account (isQueued() is true) and goes out when the phone is back.
