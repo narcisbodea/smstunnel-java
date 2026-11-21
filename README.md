@@ -21,7 +21,7 @@ Maven, without Spring:
 <dependency>
   <groupId>io.github.narcisbodea</groupId>
   <artifactId>smstunnel-java</artifactId>
-  <version>1.1.0</version>
+  <version>1.1.1</version>
 </dependency>
 ```
 
@@ -31,11 +31,11 @@ With Spring Boot, the starter instead (it brings the client):
 <dependency>
   <groupId>io.github.narcisbodea</groupId>
   <artifactId>smstunnel-spring-boot-starter</artifactId>
-  <version>1.1.0</version>
+  <version>1.1.1</version>
 </dependency>
 ```
 
-Gradle: `implementation("io.github.narcisbodea:smstunnel-java:1.1.0")` or `implementation("io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.0")`.
+Gradle: `implementation("io.github.narcisbodea:smstunnel-java:1.1.1")` or `implementation("io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.1")`.
 
 ## Get your key
 
@@ -98,10 +98,12 @@ import io.smstunnel.MessageStatus;
 MessageStatus status = sms.getMessageStatus(result.getMessageId());
 
 status.getDeliveryStatus();  // PENDING, SENT, DELIVERED, FAILED or UNCONFIRMED (handed to the SIM, no confirmation)
-status.isFinal();            // true once it will not change any more
+status.isFinal();            // true once there is nothing more to wait for: SENT, DELIVERED, FAILED or UNCONFIRMED
 status.getSentAt();          // an Instant, or null
 status.getErrorMessage();    // why it failed, or null
 ```
+
+`SENT` is the last good status today: the SMSTunnel app gets no delivery reports, so a text that went out stays `SENT`. `DELIVERED` is reserved.
 
 ### Scheduled texts
 
@@ -267,7 +269,7 @@ Paste this into Claude, ChatGPT, Cursor or Copilot, and replace the part in brac
 ```text
 I want my Java app to send texts with SMSTunnel. SMSTunnel sends each text from my own Android phone, from my own number: the phone runs the SMSTunnel app (Google Play) and is linked to my SMSTunnel account.
 
-Use the SMSTunnel Java library: Maven io.github.narcisbodea:smstunnel-java:1.1.0 (Java 11+, no dependencies). With Spring Boot, use io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.0 and smstunnel.api-key=${SMSTUNNEL_API_KEY} in application.properties: it gives a ready SmsTunnelClient bean. Without Spring: SmsTunnelClient sms = SmsTunnelClient.builder().apiKey(System.getenv("SMSTUNNEL_API_KEY")).build();
+Use the SMSTunnel Java library: Maven io.github.narcisbodea:smstunnel-java:1.1.1 (Java 11+, no dependencies). With Spring Boot, use io.github.narcisbodea:smstunnel-spring-boot-starter:1.1.1 and smstunnel.api-key=${SMSTUNNEL_API_KEY} in application.properties: it gives a ready SmsTunnelClient bean. Without Spring: SmsTunnelClient sms = SmsTunnelClient.builder().apiKey(System.getenv("SMSTUNNEL_API_KEY")).build();
 
 API facts:
 - sms.sendSms(to, message) calls POST https://smstunnel.io/api/v1/sms/send with the header X-API-Key and the JSON body {"to", "message", "deviceId"?, "defaultCountryCode"?}. It returns a SendResult with getMessageId() and isQueued().

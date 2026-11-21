@@ -6,9 +6,12 @@ import java.util.Locale;
 public enum DeliveryStatus {
     /** Waiting to go out (the phone may be offline). */
     PENDING,
-    /** The phone sent it. */
+    /**
+     * The phone sent it. The last good status today: the SMSTunnel app gets no delivery reports, so a text that went
+     * out stays {@code SENT}.
+     */
     SENT,
-    /** The carrier confirmed delivery. */
+    /** Reserved for a delivery report. The app gets none today, so the texts you send don't reach this status. */
     DELIVERED,
     /** It did not go out; {@link MessageStatus#getErrorMessage()} says why. */
     FAILED,

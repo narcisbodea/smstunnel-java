@@ -73,7 +73,7 @@ public final class ScheduledText {
 
     /**
      * Once {@link ScheduledTextStatus#SENT}: the text's id, for {@link SmsTunnelClient#getMessageStatus(String)} (whether
-     * the phone sent it, and whether it was delivered). Otherwise null.
+     * the phone sent it). Otherwise null.
      */
     public String getMessageId() {
         return messageId;

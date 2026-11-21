@@ -163,7 +163,7 @@ class SmsTunnelClientTest {
         assertEquals(DeliveryStatus.SENT, status.getDeliveryStatus());
         assertEquals("sent", status.getStatus());
         assertEquals(Instant.parse("2026-11-03T19:13:38.656Z"), status.getSentAt());
-        assertFalse(status.isFinal());
+        assertTrue(status.isFinal());
         assertNull(status.getErrorMessage());
     }
 

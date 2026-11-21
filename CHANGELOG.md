@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.1 (2026-11-21)
+
+`isFinal()` now counts a text the phone sent as final.
+
+### smstunnel-java
+
+- `MessageStatus.isFinal()` is now `true` for `SENT`. The SMSTunnel app gets no delivery reports, so a text that went out stays `SENT`, and code waiting "until final" never stopped. `SENT` is the last good status today; `DELIVERED` is reserved and still counts as final. `PENDING` and `UNKNOWN` are still not final.
+- Only `isFinal()` changes. If your code waits for `isFinal()` and then looks for `DELIVERED`, treat `SENT` as success too.
+- The docs no longer promise a delivery confirmation.
+
+### smstunnel-spring-boot-starter
+
+- 1.1.1, with the client 1.1.1. Nothing else changed.
+
 ## 1.1.0 (2026-11-15)
 
 Scheduled texts: SMSTunnel keeps a text and sends it at the time you give, 1 minute to 30 days ahead.

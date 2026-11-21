@@ -65,9 +65,13 @@ public final class MessageStatus {
         return unconfirmed || deliveryStatus == DeliveryStatus.UNCONFIRMED;
     }
 
-    /** True once the status will not change any more: delivered, failed or unconfirmed. */
+    /**
+     * True once there is nothing more to wait for: sent, delivered, failed or unconfirmed. A text the phone sent stays
+     * {@link DeliveryStatus#SENT}, because the app gets no delivery reports.
+     */
     public boolean isFinal() {
-        return deliveryStatus == DeliveryStatus.DELIVERED
+        return deliveryStatus == DeliveryStatus.SENT
+                || deliveryStatus == DeliveryStatus.DELIVERED
                 || deliveryStatus == DeliveryStatus.FAILED
                 || deliveryStatus == DeliveryStatus.UNCONFIRMED;
     }
@@ -77,7 +81,10 @@ public final class MessageStatus {
         return sentAt;
     }
 
-    /** When the carrier confirmed delivery, or null. */
+    /**
+     * When a delivery report arrived, or null. Reserved, like {@link DeliveryStatus#DELIVERED}: null for the texts you
+     * send today.
+     */
     public Instant getDeliveredAt() {
         return deliveredAt;
     }
